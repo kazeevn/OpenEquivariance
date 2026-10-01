@@ -160,12 +160,17 @@ private:
     char* code = nullptr;
     int cu_major, cu_minor;
 
+#if CUDA_VERSION >= 12000
     CUlibrary library;
+    vector<CUkernel> kernels;
+#else
+    CUmodule module;
+    vector<CUfunction> kernels;
+#endif
 
     vector<int> supported_archs; 
 
     vector<string> kernel_names;
-    vector<CUkernel> kernels;
 
 public:
     string kernel_plaintext;
@@ -197,7 +202,11 @@ public:
     }
 
     void compile(vector<string> kernel_names_i, vector<vector<int>> template_param_list, int opt_level=3) {
-        DeviceProp dp(0); // We only query the first device on the system at the moment
+        int current_device = 0;
+        if (cudaGetDevice(&current_device) != cudaSuccess) {
+            current_device = 0;
+        }
+        DeviceProp dp(current_device);
         cu_major = dp.major;
         cu_minor = dp.minor;
 
@@ -251,7 +260,9 @@ public:
         std::vector<const char*> opts = {
             "--std=c++17",
             sm.c_str(),
+#if CUDA_VERSION >= 12000
             "--split-compile=0",
+#endif
             "--use_fast_math"
         };    
 
@@ -284,6 +295,8 @@ public:
         NVRTC_SAFE_CALL(nvrtcGetCUBIN(prog, code));
 
         CUDA_SAFE_CALL(cuInit(0));
+
+#if CUDA_VERSION >= 12000
         CUDA_SAFE_CALL(cuLibraryLoadData(&library, code, 0, 0, 0, 0, 0, 0));
 
         for (size_t i = 0; i < kernel_names.size(); i++) {
@@ -298,6 +311,33 @@ public:
             kernels.emplace_back();
             CUDA_SAFE_CALL(cuLibraryGetKernel(&(kernels[i]), library, name));
         }
+#else
+        CUcontext pctx = NULL; 
+        CUDA_SAFE_CALL(cuCtxGetCurrent(&pctx));
+
+        if(pctx == NULL) {
+            int device_id = current_device;
+            CUdevice dev;
+            CUDA_SAFE_CALL(cuDeviceGet(&dev, device_id));
+            CUDA_SAFE_CALL(cuDevicePrimaryCtxRetain(&pctx, dev));
+            CUDA_SAFE_CALL(cuCtxSetCurrent(pctx));
+        }
+
+        CUDA_SAFE_CALL(cuModuleLoadData(&module, code));
+
+        for (size_t i = 0; i < kernel_names.size(); i++) {
+            const char *name;
+
+            NVRTC_SAFE_CALL(nvrtcGetLoweredName(
+                                    prog,
+                    kernel_names[i].c_str(), // name expression
+                    &name                    // lowered name
+                    ));
+
+            kernels.emplace_back();
+            CUDA_SAFE_CALL(cuModuleGetFunction(&(kernels[i]), module, name));
+        }
+#endif
     }
 
     void set_max_smem(int kernel_id, uint32_t max_smem_bytes) {
@@ -306,6 +346,7 @@ public:
         if(kernel_id >= kernels.size())
             throw std::logic_error("Kernel index out of range!");
 
+#if CUDA_VERSION >= 12000
         int device_count;
         CUDA_SAFE_CALL(cuDeviceGetCount(&device_count));
 
@@ -321,6 +362,12 @@ public:
                         dev));
             }
         }
+#else
+        CUDA_SAFE_CALL(cuFuncSetAttribute(
+            kernels[kernel_id],
+            CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+            max_smem_bytes));
+#endif
     }
 
     void execute(int kernel_id, void* args[], KernelLaunchConfig config) {
@@ -350,10 +397,17 @@ public:
 
     ~CUJITKernel() {
         if(compiled) {
+#if CUDA_VERSION >= 12000
             auto result = cuLibraryUnload(library);
             if (result != CUDA_SUCCESS && result != CUDA_ERROR_DEINITIALIZED) {
                 std::cout << "Failed to unload CUDA library, error code: " << ((int) result) << std::endl; 
             }
+#else
+            auto result = cuModuleUnload(module);
+            if (result != CUDA_SUCCESS && result != CUDA_ERROR_DEINITIALIZED) {
+                std::cout << "Failed to unload CUDA module, error code: " << ((int) result) << std::endl; 
+            }
+#endif
 
             delete[] code;
         }

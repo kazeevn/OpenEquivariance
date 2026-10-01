@@ -172,26 +172,47 @@ struct KernelProp {
     }
 };
 
-inline std::unordered_map<int64_t,
+struct CacheKey {
+    int64_t hash;
+    int device_id;
+    bool operator==(const CacheKey &o) const {
+        return hash == o.hash && device_id == o.device_id;
+    }
+};
+
+struct CacheKeyHash {
+    size_t operator()(const CacheKey &k) const {
+        return std::hash<int64_t>{}(k.hash) ^ (std::hash<int>{}(k.device_id) << 1);
+    }
+};
+
+inline std::unordered_map<CacheKey,
     std::pair<
         std::unique_ptr<JITTPImpl<JITKernel>>,
         KernelProp
-    >> tp_cache;
+    >, CacheKeyHash> tp_cache;
 
-inline std::unordered_map<int64_t,
+inline std::unordered_map<CacheKey,
     std::pair<
         std::unique_ptr<JITConvImpl<JITKernel>>,
         KernelProp
-    >> conv_cache;
+    >, CacheKeyHash> conv_cache;
 
 inline std::mutex mut;
 
 inline std::pair<JITTPImpl<JITKernel>*, KernelProp>
     compile_tp_with_caching(const Tensor &json_bytes,
                             int64_t hash) {
+    int device_id = 0;
+#ifdef CUDA_BACKEND
+    cudaGetDevice(&device_id);
+#elif defined(HIP_BACKEND)
+    hipGetDevice(&device_id);
+#endif
+    CacheKey key{hash, device_id};
     {
         const std::lock_guard<std::mutex> lock(mut);
-        auto it = tp_cache.find(hash);
+        auto it = tp_cache.find(key);
         if (it == tp_cache.end()) {
             Tensor cpu_tensor = tensor_to_cpu_contiguous(json_bytes);
             std::string json_payload(
@@ -216,10 +237,10 @@ inline std::pair<JITTPImpl<JITKernel>*, KernelProp>
                 dbackward_cfg,
                 kernel_prop_map);
 
-            tp_cache.insert({hash,
+            tp_cache.insert({key,
                 std::make_pair(std::move(jit_tp_impl),
                 KernelProp(kernel_prop_map, false))});
-            it = tp_cache.find(hash);
+            it = tp_cache.find(key);
         }
         return {it->second.first.get(), it->second.second};
     }
@@ -228,9 +249,16 @@ inline std::pair<JITTPImpl<JITKernel>*, KernelProp>
 inline std::pair<JITConvImpl<JITKernel>*, KernelProp>
     compile_conv_with_caching(const Tensor &json_bytes,
                               int64_t hash) {
+    int device_id = 0;
+#ifdef CUDA_BACKEND
+    cudaGetDevice(&device_id);
+#elif defined(HIP_BACKEND)
+    hipGetDevice(&device_id);
+#endif
+    CacheKey key{hash, device_id};
     {
         const std::lock_guard<std::mutex> lock(mut);
-        auto it = conv_cache.find(hash);
+        auto it = conv_cache.find(key);
         if (it == conv_cache.end()) {
             Tensor cpu_tensor = tensor_to_cpu_contiguous(json_bytes);
             std::string json_payload(
@@ -255,10 +283,10 @@ inline std::pair<JITConvImpl<JITKernel>*, KernelProp>
                 dbackward_cfg,
                 kernel_prop_map);
 
-            conv_cache.insert({hash,
+            conv_cache.insert({key,
                 std::make_pair(std::move(jit_conv_impl),
                 KernelProp(kernel_prop_map, true))});
-            it = conv_cache.find(hash);
+            it = conv_cache.find(key);
         }
         return {it->second.first.get(), it->second.second};
     }

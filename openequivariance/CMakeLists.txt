@@ -3,29 +3,44 @@ project(openequivariance_stable_ext)
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
 
-# Download LibTorch 
-include(FetchContent)
-
-if (AARCH64 OR CMAKE_SYSTEM_PROCESSOR MATCHES "(arm)|(ARM)|(aarch64)")
-    message(STATUS "Targeting ARM architecture (AARCH64 override or processor match)")
-    set(LIBTORCH_URL "https://github.com/PASSIONLab/libtorch_aarch64/raw/refs/heads/main/pkg-libtorch.tar.zst")
-else()
-    message(STATUS "Did not match arm/aarch64, performing x86 install")
-    set(LIBTORCH_URL "https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.10.0%2Bcpu.zip")
-endif()
-
-FetchContent_Declare(
-    libtorch
-    URL "${LIBTORCH_URL}"
+# Locate LibTorch: prefer installed torch in Python environment
+execute_process(
+    COMMAND "${Python_EXECUTABLE}" -c "import os, torch; print(os.path.dirname(torch.__file__))"
+    RESULT_VARIABLE _torch_status
+    OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE _torch_dir
 )
 
-message(STATUS "Downloading LibTorch...")
-FetchContent_MakeAvailable(libtorch)
+if (_torch_status EQUAL 0 AND EXISTS "${_torch_dir}/include/torch/csrc/stable")
+    message(STATUS "Found installed Torch with Stable C ABI at: ${_torch_dir}")
+    set(LIBTORCH_INCLUDE_DIR "${_torch_dir}/include")
+    set(LIBTORCH_LIB_DIR "${_torch_dir}/lib")
+    find_library(TORCH_CPU_LIB NAMES torch_cpu PATHS "${LIBTORCH_LIB_DIR}" NO_DEFAULT_PATH)
+    find_library(C10_LIB NAMES c10 PATHS "${LIBTORCH_LIB_DIR}" NO_DEFAULT_PATH)
+else()
+    # Download LibTorch 
+    include(FetchContent)
 
-set(LIBTORCH_INCLUDE_DIR "${libtorch_SOURCE_DIR}/include")
-set(LIBTORCH_LIB_DIR "${libtorch_SOURCE_DIR}/lib")
-find_library(TORCH_CPU_LIB NAMES torch_cpu PATHS "${LIBTORCH_LIB_DIR}" NO_DEFAULT_PATH)
-find_library(C10_LIB NAMES c10 PATHS "${LIBTORCH_LIB_DIR}" NO_DEFAULT_PATH)
+    if (AARCH64 OR CMAKE_SYSTEM_PROCESSOR MATCHES "(arm)|(ARM)|(aarch64)")
+        message(STATUS "Targeting ARM architecture (AARCH64 override or processor match)")
+        set(LIBTORCH_URL "https://github.com/PASSIONLab/libtorch_aarch64/raw/refs/heads/main/pkg-libtorch.tar.zst")
+    else()
+        message(STATUS "Did not match arm/aarch64, performing x86 install")
+        set(LIBTORCH_URL "https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.10.0%2Bcpu.zip")
+    endif()
+
+    FetchContent_Declare(
+        libtorch
+        URL "${LIBTORCH_URL}"
+    )
+
+    message(STATUS "Downloading LibTorch...")
+    FetchContent_MakeAvailable(libtorch)
+
+    set(LIBTORCH_INCLUDE_DIR "${libtorch_SOURCE_DIR}/include")
+    set(LIBTORCH_LIB_DIR "${libtorch_SOURCE_DIR}/lib")
+    find_library(TORCH_CPU_LIB NAMES torch_cpu PATHS "${LIBTORCH_LIB_DIR}" NO_DEFAULT_PATH)
+    find_library(C10_LIB NAMES c10 PATHS "${LIBTORCH_LIB_DIR}" NO_DEFAULT_PATH)
+endif()
 
 message(STATUS "LibTorch Include: ${LIBTORCH_INCLUDE_DIR}")
 message(STATUS "LibTorch Lib: ${LIBTORCH_LIB_DIR}")
@@ -52,7 +67,7 @@ set(OEQ_SOURCES
     ${EXT_JSON_DIR}/json11.cpp
 )
 
-set(OEQ_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/openequivariance/_torch/extlib")
+set(OEQ_INSTALL_DIR "openequivariance/_torch/extlib")
 
 function(add_stable_extension target_name backend_define link_libraries)
     # Create nanobind extension
