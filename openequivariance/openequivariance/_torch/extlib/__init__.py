@@ -210,9 +210,13 @@ else:
 
 def torch_ext_so_path():
     if not USE_PRECOMPILED_EXTENSION:
-        return extension_module.__file__
+        return extension_module.__file__ if extension_module is not None else None
     else:
-        dirname = os.path.dirname(extension_module.__file__)
+        dirname = (
+            os.path.dirname(extension_module.__file__)
+            if extension_module is not None
+            else os.path.dirname(__file__)
+        )
         if torch.version.cuda:
             return os.path.join(dirname, "liboeq_stable_cuda_aoti.so")
         elif torch.version.hip:
